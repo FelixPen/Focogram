@@ -1,0 +1,2 @@
+# Focogram
+Focogram是一个基于golang开发的社交聊天网站
