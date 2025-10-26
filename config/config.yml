@@ -1,0 +1,8 @@
+app:
+  name: Focogram
+  port: 8080
+
+database:
+  dsn: "root:01141XC...@tcp(127.0.0.1:3306)/focogram?charset=utf8mb4&parseTime=True&loc=Local"
+  max_open_conns: 114
+  max_idle_conns: 11
