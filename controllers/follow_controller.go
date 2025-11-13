@@ -135,7 +135,7 @@ func FollowUser(c *gin.Context) {
 	}
 
 	// 检查用户是否存在
-	exists, err := checkUserExists(followedID)
+	exists, err := CheckUserExists(followedID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "系统错误"})
 		return
@@ -371,9 +371,14 @@ func GetMyFollowers(c *gin.Context) {
 	})
 }
 
-// 检查用户是否存在
-func checkUserExists(userid string) (bool, error) {
+// 检查用户是否存在（完善实现）
+func CheckUserExists(userID string) (bool, error) {
 	var count int64
-	err := global.Db.Model(&models.User{}).Where("userid = ?", userid).Count(&count).Error
-	return count > 0, err
+	// 明确指定用户表，确保查询正确
+	err := global.Db.Table("users").Where("userid = ?", userID).Count(&count).Error
+	if err != nil {
+		log.Printf("检查用户存在性失败 (userID=%s): %v", userID, err)
+		return false, err
+	}
+	return count > 0, nil
 }

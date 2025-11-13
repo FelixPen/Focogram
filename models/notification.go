@@ -8,6 +8,7 @@ const (
 	NotificationTypeLike    = "like"
 	NotificationTypeComment = "comment"
 	NotificationTypeFollow  = "follow"
+	NotificationTypeMessage = "message"
 )
 
 type Notification struct {

@@ -53,6 +53,11 @@ func SetRouter() *gin.Engine {
 		// 通知相关
 		auth.GET("/notifications", controllers.GetNotifications)
 
+		//私信
+		auth.POST("/message/conversation", controllers.CreateConversation)
+		auth.POST("/message/send/:receiver_id/:conv_id", controllers.SendPrivateMessage)
+		auth.GET("/message/conversation/:conv_id", controllers.GetConversationMessages)
+
 		// WebSocket连接（实时消息推送）
 		// 注意：WebSocket使用GET方法，且需要认证
 		r.GET("/ws", middlewares.AuthMiddleware(), utils.WsHandler)

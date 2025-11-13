@@ -51,9 +51,21 @@ func initDB() {
 		_ = global.Db.Exec("SET FOREIGN_KEY_CHECKS=1").Error
 		log.Fatal("数据库迁移失败:", err)
 	}
+	// 迁移对话表
+	if err := global.Db.AutoMigrate(&models.Conversation{}); err != nil {
+		_ = global.Db.Exec("SET FOREIGN_KEY_CHECKS=1").Error
+		log.Fatal("数据库迁移失败 (Conversation):", err)
+	}
+
+	// 迁移私信表
+	if err := global.Db.AutoMigrate(&models.PrivateMessage{}); err != nil {
+		_ = global.Db.Exec("SET FOREIGN_KEY_CHECKS=1").Error
+		log.Fatal("数据库迁移失败 (PrivateMessage):", err)
+	}
 	// 迁移关注表（使用自定义迁移方法）
 	follow := models.Follow{}
 	if err := follow.Migration(global.Db); err != nil {
 		log.Fatal("关注表迁移失败:", err)
 	}
+
 }
