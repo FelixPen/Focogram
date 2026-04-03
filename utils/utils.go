@@ -103,15 +103,11 @@ func SubPostNum(userid string) error {
 func CheckRateLimitAndDebounce(actionType, userid, targetID string) error {
 	ctx := context.Background()
 
-	// 接口限流，使用操作类型区分
-	limitkey := fmt.Sprintf("%s_limit:%s", actionType, userid)
-	count, err := global.Redis.Incr(ctx, limitkey).Result()
-	if err != nil {
-		return fmt.Errorf("系统繁忙，请稍后再试")
-	}
-	if count == 1 {
-		global.Redis.Expire(ctx, limitkey, 1*time.Minute)
-	}
+	// 滑动窗口限流，使用操作类型区分
+	windowKey := fmt.Sprintf("%s_sliding_window:%s", actionType, userid)
+	currentTime := time.Now().UnixNano()
+	windowSize := 1 * time.Minute // 1分钟窗口
+	windowStart := currentTime - windowSize.Nanoseconds()
 
 	// 根据不同操作类型设置不同的限制
 	var maxLimit int64
@@ -124,9 +120,33 @@ func CheckRateLimitAndDebounce(actionType, userid, targetID string) error {
 		maxLimit = 30 // 默认限制
 	}
 
-	if count > maxLimit {
+	// 移除窗口外的记录
+	_, err := global.Redis.ZRemRangeByScore(ctx, windowKey, "0", fmt.Sprintf("%d", windowStart)).Result()
+	if err != nil {
+		return fmt.Errorf("系统繁忙，请稍后再试")
+	}
+
+	// 检查窗口内的请求数
+	count, err := global.Redis.ZCard(ctx, windowKey).Result()
+	if err != nil {
+		return fmt.Errorf("系统繁忙，请稍后再试")
+	}
+
+	if count >= maxLimit {
 		return fmt.Errorf("操作过于频繁，请稍后再试")
 	}
+
+	// 添加当前请求的时间戳到滑动窗口
+	_, err = global.Redis.ZAdd(ctx, windowKey, &redis.Z{
+		Score:  float64(currentTime),
+		Member: fmt.Sprintf("%d", currentTime),
+	}).Result()
+	if err != nil {
+		return fmt.Errorf("系统繁忙，请稍后再试")
+	}
+
+	// 设置过期时间，避免内存泄漏
+	global.Redis.Expire(ctx, windowKey, windowSize)
 
 	// 防抖操作，使用操作类型区分
 	lastActionkey := fmt.Sprintf("%s_last_action:%s:%s", actionType, targetID, userid)

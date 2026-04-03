@@ -20,7 +20,7 @@ func SetRouter() *gin.Engine {
 		public.POST("/login", controllers.Login)
 		public.GET("/userinfo", controllers.GetUserInfo)
 		public.GET("/post/:userid", controllers.GetUserPosts)
-		public.GET("/like/count/:postid", controllers.GetPostLikeCount)
+		public.GET("/like/count/:postid", controllers.GetPostLikeCount2)
 		public.GET("/comment/:postid", controllers.GetPostComments)
 
 	}
@@ -37,8 +37,8 @@ func SetRouter() *gin.Engine {
 		auth.DELETE("/post/:postid", controllers.DeletePost)
 
 		// 点赞相关
-		auth.POST("/like/:postid", controllers.LikePost)
-		auth.GET("/like/:postid", controllers.GetPostLikeUsers)
+		auth.POST("/like/:postid", controllers.LikePost2)
+		auth.GET("/like/:postid", controllers.GetPostLikeUsers2)
 
 		// 评论相关
 		auth.POST("/comment/:postid", controllers.CreateComment)

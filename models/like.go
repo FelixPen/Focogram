@@ -24,3 +24,8 @@ func GetLikeFromDB(postid string) ([]Like, error) {
 func CreateLikes(likes []Like) error {
 	return global.Db.Create(&likes).Error
 }
+func (l *Like) Reset() {
+	l.Postid = ""
+	l.Userid = ""
+	l.Liked = false
+}

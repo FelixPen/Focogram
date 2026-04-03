@@ -49,7 +49,7 @@ func GetUserPosts(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "未授权"})
 		return
 	}
-	if err := global.Db.Where("userid=?", userid).Order("display_order").Find(&post).Error; err != nil {
+	if err := global.Db.Where("userid=?", userid).Find(&post).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

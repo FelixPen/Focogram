@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -18,14 +19,17 @@ import (
 )
 
 var (
-	cachekeyComment  = "comment:"       //comment:{commentid} ->Hash
-	cachekeyPostCmts = "post:comments:" //post:comments:{postid}->Sorted Set
-	commentQueuekey  = "comment_queue"  //Redis队列，用于异步落库
+	cachekeyComment        = "comment:"       //comment:{commentid} ->Hash
+	cachekeyPostCmts       = "post:comments:" //post:comments:{postid}->Sorted Set
+	commentQueuekey        = "comment_queue"  //Redis队列，用于异步落库
+	CommentbatchWriterOnce sync.Once
 )
 
 // 初始化评论批量写入器（启动时执行）
 func InitCommentBatchWriter() {
-	go CommentBatchWriteToDB()
+	CommentbatchWriterOnce.Do(func() {
+		go CommentBatchWriteToDB()
+	})
 }
 
 // 批量将评论批量写入数据库
@@ -98,7 +102,7 @@ func saveCommentBatch(batch []*models.Comment) {
 
 // 发布评论
 func CreateComment(c *gin.Context) {
-	initBatchWriter()
+	InitCommentBatchWriter()
 	var input models.Comment
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
