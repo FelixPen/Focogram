@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: focogram-mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: focogram2024
+      MYSQL_DATABASE: focogram
+      MYSQL_USER: focogram
+      MYSQL_PASSWORD: focogram2024
+      TZ: Asia/Shanghai
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    command: 
+      --default-authentication-plugin=mysql_native_password
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-pfocogram2024"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - focogram-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: focogram-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --requirepass focogram2024
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - focogram-network
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: focogram-backend
+    restart: always
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./uploads:/app/uploads
+    environment:
+      - DB_DSN=focogram:focogram2024@tcp(mysql:3306)/focogram?charset=utf8mb4&parseTime=True&loc=Local
+      - REDIS_ADDR=redis:6379
+      - REDIS_PASSWORD=focogram2024
+    networks:
+      - focogram-network
+
+  frontend:
+    build:
+      context: ./web
+      dockerfile: Dockerfile.frontend
+    container_name: focogram-frontend
+    restart: always
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+    networks:
+      - focogram-network
+
+volumes:
+  mysql-data:
+  redis-data:
+
+networks:
+  focogram-network:
+    driver: bridge

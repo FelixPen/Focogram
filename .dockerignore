@@ -1,0 +1,26 @@
+# Build artifacts
+*.exe
+*.dll
+*.so
+
+# Dependencies
+node_modules/
+vendor/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+
+# Uploads (use volume instead)
+uploads/*
+
+# Logs
+*.log
+
+# Env
+.env
+.env.local

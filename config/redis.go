@@ -9,10 +9,24 @@ import (
 )
 
 func initRedis() {
+	addr := "127.0.0.1:6379"
+	password := ""
+	db := 0
+
+	if AppConfig.Redis.Addr != "" {
+		addr = AppConfig.Redis.Addr
+	}
+	if AppConfig.Redis.Password != "" {
+		password = AppConfig.Redis.Password
+	}
+	if AppConfig.Redis.DB > 0 {
+		db = AppConfig.Redis.DB
+	}
+
 	RedisClient := redis.NewClient(&redis.Options{
-		Addr:     "127.0.0.1:6379",
-		DB:       0,
-		Password: "",
+		Addr:     addr,
+		DB:       db,
+		Password: password,
 	})
 	_, err := RedisClient.Ping(context.Background()).Result()
 	if err != nil {
