@@ -437,15 +437,8 @@ func SendPrivateMessage(c *gin.Context) {
 	convData, _ := json.Marshal(conv)
 	global.Redis.RPush(ctx, convQueueKey, convData)
 
-	// 发送WebSocket通知
-	notification := &models.Notification{
-		Userid:      receiverID,
-		Senderid:    senderID,
-		ContentType: models.NotificationTypeMessage,
-		Contentid:   strconv.FormatUint(uint64(convID), 10),
-		Content:     "收到新消息: " + req.Content,
-	}
-	go utils.PushToWebSocket(notification)
+	// 发送WebSocket私信消息
+	go utils.PushPrivateMessage(msg)
 
 	c.JSON(http.StatusOK, gin.H{
 		"message_id":      msg.MessageID,
@@ -464,12 +457,12 @@ func GetConversations(c *gin.Context) {
 
 	// 分页参数
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	size, _ := strconv.Atoi(c.DefaultQuery("size", "20"))
+	size, _ := strconv.Atoi(c.DefaultQuery("size", "100"))
 	if page < 1 {
 		page = 1
 	}
-	if size < 1 || size > 100 {
-		size = 20
+	if size < 1 || size > 500 {
+		size = 100
 	}
 
 	start := (page - 1) * size
@@ -610,62 +603,26 @@ func GetConversationMessages(c *gin.Context) {
 		return
 	}
 
-	// 分页参数
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	size, _ := strconv.Atoi(c.DefaultQuery("size", "20"))
-	if page < 1 {
-		page = 1
+	// 确定对方用户ID
+	otherUserID := conv.User1ID
+	if otherUserID == userID {
+		otherUserID = conv.User2ID
 	}
-	if size < 1 || size > 100 {
-		size = 20
-	}
-
-	// 计算Redis分页范围（倒序，最新的在前）
-	start := int64((page - 1) * size)
-	end := start + int64(size) - 1
 
 	ctx := context.Background()
 	key := convMsgCacheKey + strconv.FormatUint(convID, 10)
 
-	// 从缓存获取消息ID
-	msgIDs, err := global.Redis.ZRevRange(ctx, key, start, end).Result()
-	if err == nil && len(msgIDs) > 0 {
-		// 获取总数
-		total, _ := global.Redis.ZCard(ctx, key).Result()
-
-		// 批量获取消息详情
-		messages := make([]map[string]interface{}, 0, len(msgIDs))
-		for _, idStr := range msgIDs {
-			msgData, err := global.Redis.HGetAll(ctx, msgCacheKey+idStr).Result()
-			if err != nil || len(msgData) == 0 {
-				continue
-			}
-
-			messages = append(messages, map[string]interface{}{
-				"message_id":      msgData["message_id"],
-				"conversation_id": msgData["conversation_id"],
-				"sender_id":       msgData["sender_id"],
-				"receiver_id":     msgData["receiver_id"],
-				"content":         msgData["content"],
-				"created_at":      msgData["created_at"],
-			})
-		}
-
-		c.JSON(http.StatusOK, gin.H{
-			"total":    total,
-			"page":     page,
-			"size":     size,
-			"messages": messages,
-		})
-		return
+	// 清空对话消息列表缓存和所有单条消息缓存
+	msgIDs, _ := global.Redis.ZRange(ctx, key, 0, -1).Result()
+	for _, msgID := range msgIDs {
+		global.Redis.Del(ctx, msgCacheKey+msgID)
 	}
+	global.Redis.Del(ctx, key)
 
-	// 缓存未命中，从数据库查询
+	// 从数据库查询全部消息
 	var dbMessages []models.PrivateMessage
 	if err := global.Db.Where("conversation_id = ?", convID).
-		Order("created_at DESC").
-		Limit(size).
-		Offset((page - 1) * size).
+		Order("created_at ASC"). // 正序，前端不需要reverse了！
 		Find(&dbMessages).Error; err != nil {
 		log.Printf("查询消息失败: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取消息失败"})
@@ -676,47 +633,101 @@ func GetConversationMessages(c *gin.Context) {
 	var total int64
 	global.Db.Where("conversation_id = ?", convID).Count(&total)
 
-	// 重建缓存
-	pipe := global.Redis.Pipeline()
+	log.Printf("从数据库加载对话 %d 的消息: %d 条", convID, len(dbMessages))
+
+	// 构建消息列表（直接返回，不缓存！）
 	messages := make([]map[string]interface{}, 0, len(dbMessages))
 	for _, msg := range dbMessages {
-		msgIDStr := strconv.FormatUint(uint64(msg.MessageID), 10)
-		msgKey := msgCacheKey + msgIDStr
-
-		// 存储消息详情
-		pipe.HSet(ctx, msgKey, map[string]interface{}{
-			"message_id":      msg.MessageID,
-			"conversation_id": msg.ConversationID,
-			"sender_id":       msg.SenderID,
-			"receiver_id":     msg.ReceiverID,
-			"content":         msg.Content,
-			"created_at":      msg.CreatedAt.Unix(),
-		})
-		pipe.Expire(ctx, msgKey, 24*time.Hour)
-
-		// 添加到对话消息列表
-		pipe.ZAdd(ctx, key, &redis.Z{
-			Score:  float64(msg.CreatedAt.Unix()),
-			Member: msg.MessageID,
-		})
-
-		// 构建返回数据
 		messages = append(messages, map[string]interface{}{
 			"message_id":      msg.MessageID,
 			"conversation_id": msg.ConversationID,
 			"sender_id":       msg.SenderID,
 			"receiver_id":     msg.ReceiverID,
 			"content":         msg.Content,
-			"created_at":      msg.CreatedAt.Unix(),
+			"created_at":      msg.CreatedAt,
 		})
 	}
-	pipe.Expire(ctx, key, 24*time.Hour)
-	_, _ = pipe.Exec(ctx)
 
 	c.JSON(http.StatusOK, gin.H{
-		"total":    total,
-		"page":     page,
-		"size":     size,
-		"messages": messages,
+		"total":         total,
+		"messages":      messages,
+		"other_user_id": otherUserID,
+	})
+}
+
+// 标记对话消息为已读
+func MarkConversationAsRead(c *gin.Context) {
+	userID := c.GetString("userid")
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "请先登录"})
+		return
+	}
+
+	// 获取对话ID
+	convID, err := strconv.ParseUint(c.Param("conv_id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的对话ID"})
+		return
+	}
+
+	// 验证权限
+	var conv models.Conversation
+	if err := global.Db.Where("conversation_id = ? AND (user1_id = ? OR user2_id = ?)",
+		convID, userID, userID).First(&conv).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "对话不存在或无权访问"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "系统错误"})
+		return
+	}
+
+	// 将该对话中我作为接收者的所有消息标记为已读
+	result := global.Db.Model(&models.PrivateMessage{}).
+		Where("conversation_id = ? AND receiver_id = ? AND is_read = ?", convID, userID, false).
+		Update("is_read", true)
+
+	if result.Error != nil {
+		log.Printf("标记已读失败: %v", result.Error)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "标记已读失败"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"marked_count": result.RowsAffected,
+		"message":      "标记已读成功",
+	})
+}
+
+// 获取所有未读消息统计
+func GetUnreadMessageStats(c *gin.Context) {
+	userID := c.GetString("userid")
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "请先登录"})
+		return
+	}
+
+	// 查询每个对话的未读消息数
+	type UnreadStat struct {
+		ConversationID uint  `json:"conversation_id"`
+		Count          int64 `json:"count"`
+	}
+	var stats []UnreadStat
+
+	global.Db.Table("private_messages").
+		Select("conversation_id, COUNT(*) as count").
+		Where("receiver_id = ? AND is_read = ?", userID, false).
+		Group("conversation_id").
+		Scan(&stats)
+
+	// 计算总未读
+	total := int64(0)
+	for _, s := range stats {
+		total += s.Count
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"total_unread": total,
+		"details":      stats,
 	})
 }

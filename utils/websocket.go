@@ -72,23 +72,22 @@ func (m *WsManager) Start() {
 			if exists {
 				// 格式化消息
 				msg, err := json.Marshal(map[string]interface{}{
-					"type":    notification.ContentType,
-					"content": notification.Content,
-					"time":    notification.CreatedAt.Format("2006-01-02 15:04:05"),
-					"id":      notification.ID,
+					"content_type": notification.ContentType,
+					"senderid":     notification.Senderid,
+					"content":      notification.Content,
+					"time":         notification.CreatedAt.Format("2006-01-02 15:04:05"),
+					"id":           notification.ID,
 				})
 				if err != nil {
-					log.Printf("WebSocket消息序列化失败: %v", err)
+					log.Printf("❌ WebSocket消息序列化失败: %v", err)
 					continue
 				}
 
 				// 发送消息
 				if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-					log.Printf("WebSocket消息发送失败: %v", err)
+					log.Printf("❌ WebSocket消息发送失败: %v", err)
 					// 发送失败时移除连接
 					m.unregister <- &Client{userID: notification.Userid, conn: conn}
-				} else {
-					log.Printf("已向用户 %s 推送通知: %s", notification.Userid, notification.Content)
 				}
 			}
 		}
@@ -129,6 +128,9 @@ func WsHandler(c *gin.Context) {
 	// 注册客户端
 	WsMgr.register <- client
 
+	// 补发离线未读私信 + 未读统计
+	go SendOfflineMessages(userID, conn)
+
 	// 监听客户端消息（主要用于心跳检测）
 	go func() {
 		defer func() {
@@ -145,6 +147,86 @@ func WsHandler(c *gin.Context) {
 			}
 		}
 	}()
+}
+
+// 补发离线未读私信及未读统计
+func SendOfflineMessages(userID string, conn *websocket.Conn) {
+	// 1. 获取每个对话的未读消息数
+	type UnreadCount struct {
+		ConversationID uint   `json:"conversation_id"`
+		Count          int64  `json:"count"`
+		OtherUserID    string `json:"other_user_id"`
+	}
+	var unreadCounts []UnreadCount
+
+	rows, err := global.Db.Table("private_messages").
+		Select("conversation_id, COUNT(*) as count, sender_id as other_user_id").
+		Where("receiver_id = ? AND is_read = ?", userID, false).
+		Group("conversation_id, sender_id").
+		Rows()
+
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var uc UnreadCount
+			rows.Scan(&uc.ConversationID, &uc.Count, &uc.OtherUserID)
+			unreadCounts = append(unreadCounts, uc)
+		}
+	}
+
+	// 2. 计算总未读数
+	totalUnread := int64(0)
+	for _, uc := range unreadCounts {
+		totalUnread += uc.Count
+	}
+
+	// 3. 先发送未读汇总消息（像微信一样）
+	summaryMsg, _ := json.Marshal(map[string]interface{}{
+		"content_type":   "message_unread_summary",
+		"total_unread":   totalUnread,
+		"unread_details": unreadCounts,
+		"time":           time.Now().Format("2006-01-02 15:04:05"),
+	})
+	conn.WriteMessage(websocket.TextMessage, summaryMsg)
+
+	// 4. 补发所有未读私信
+	var unreadMessages []models.PrivateMessage
+	global.Db.Where("receiver_id = ? AND is_read = ?", userID, false).
+		Order("created_at ASC").
+		Find(&unreadMessages)
+
+	for _, msg := range unreadMessages {
+		msgData, _ := json.Marshal(map[string]interface{}{
+			"content_type":    "private_message",
+			"message_id":      msg.MessageID,
+			"conversation_id": msg.ConversationID,
+			"sender_id":       msg.SenderID,
+			"content":         msg.Content,
+			"created_at":      msg.CreatedAt.Format("2006-01-02 15:04:05"),
+			"is_read":         msg.IsRead,
+		})
+		conn.WriteMessage(websocket.TextMessage, msgData)
+	}
+}
+
+// 推送私信到WebSocket
+func PushPrivateMessage(msg *models.PrivateMessage) {
+	WsMgr.clientMux.RLock()
+	conn, exists := WsMgr.clients[msg.ReceiverID]
+	WsMgr.clientMux.RUnlock()
+
+	if exists {
+		msgData, _ := json.Marshal(map[string]interface{}{
+			"content_type":    "private_message",
+			"message_id":      msg.MessageID,
+			"conversation_id": msg.ConversationID,
+			"sender_id":       msg.SenderID,
+			"content":         msg.Content,
+			"created_at":      msg.CreatedAt.Format("2006-01-02 15:04:05"),
+			"is_read":         msg.IsRead,
+		})
+		conn.WriteMessage(websocket.TextMessage, msgData)
+	}
 }
 
 // 推送通知到WebSocket并写入缓存

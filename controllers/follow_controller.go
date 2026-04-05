@@ -190,19 +190,23 @@ func FollowUser(c *gin.Context) {
 		}()
 	}
 
+	// 关注成功后发送通知
+	var follower models.User
+	if err := global.Db.Select("username").Where("userid = ?", followerID).First(&follower).Error; err == nil {
+		notification := &models.Notification{
+			Userid:      followedID,
+			Senderid:    followerID,
+			ContentType: models.NotificationTypeFollow,
+			Contentid:   followerID,
+			Content:     follower.Username + " 关注了你",
+		}
+		go utils.PushToWebSocket(notification)
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"message":    "关注成功",
 		"followedid": followedID,
 	})
-	// 关注成功后发送通知
-	notification := &models.Notification{
-		Userid:      followedID,
-		Senderid:    followerID,
-		ContentType: models.NotificationTypeFollow,
-		Contentid:   followerID,
-		Content:     followerID + "关注了你",
-	}
-	go utils.PushToWebSocket(notification)
 }
 
 // 取消关注
@@ -371,6 +375,41 @@ func GetMyFollowers(c *gin.Context) {
 	})
 }
 
+// 检查是否已关注某个用户
+func CheckFollow(c *gin.Context) {
+	followerID := c.GetString("userid")
+	if followerID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "请先登录"})
+		return
+	}
+
+	followedID := c.Param("userid")
+	if followedID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "用户ID不能为空"})
+		return
+	}
+
+	ctx := context.Background()
+	key := followingCacheKey + followerID
+
+	isMember, err := global.Redis.SIsMember(ctx, key, followedID).Result()
+	if err != nil {
+		var count int64
+		if err := global.Db.Model(&models.Follow{}).Where("followerid = ? AND followedid = ?", followerID, followedID).Count(&count).Error; err != nil {
+			log.Printf("检查关注状态失败: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "系统错误"})
+			return
+		}
+		isMember = count > 0
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"isFollowing": isMember,
+		"followerid":  followerID,
+		"followedid":  followedID,
+	})
+}
+
 // 检查用户是否存在（完善实现）
 func CheckUserExists(userID string) (bool, error) {
 	var count int64
@@ -381,4 +420,106 @@ func CheckUserExists(userID string) (bool, error) {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// 获取指定用户的关注列表
+func GetUserFollowing(c *gin.Context) {
+	targetUserID := c.Param("userid")
+	if targetUserID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "用户ID不能为空"})
+		return
+	}
+
+	key := followingCacheKey + targetUserID
+	ctx := context.Background()
+
+	// 从缓存获取
+	followingList, err := global.Redis.SMembers(ctx, key).Result()
+	if err == nil && len(followingList) > 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"count":     len(followingList),
+			"following": followingList,
+		})
+		return
+	}
+
+	// 缓存未命中，从数据库获取
+	var follows []models.Follow
+	if err := global.Db.Where("followerid = ?", targetUserID).Find(&follows).Error; err != nil {
+		log.Printf("查询用户关注列表失败: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取关注列表失败"})
+		return
+	}
+
+	// 构建关注列表
+	followingList = make([]string, 0, len(follows))
+	for _, follow := range follows {
+		followingList = append(followingList, follow.Followedid)
+	}
+
+	// 重建缓存
+	if len(followingList) > 0 {
+		members := make([]interface{}, len(followingList))
+		for i, id := range followingList {
+			members[i] = id
+		}
+		global.Redis.SAdd(ctx, key, members...)
+		global.Redis.Expire(ctx, key, 24*time.Hour)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"count":     len(followingList),
+		"following": followingList,
+	})
+}
+
+// 获取指定用户的粉丝列表
+func GetUserFollowers(c *gin.Context) {
+	targetUserID := c.Param("userid")
+	if targetUserID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "用户ID不能为空"})
+		return
+	}
+
+	key := followerCacheKey + targetUserID
+	ctx := context.Background()
+
+	// 从缓存获取
+	followerList, err := global.Redis.SMembers(ctx, key).Result()
+	if err == nil && len(followerList) > 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"count":     len(followerList),
+			"followers": followerList,
+		})
+		return
+	}
+
+	// 缓存未命中，从数据库获取
+	var follows []models.Follow
+	if err := global.Db.Where("followedid = ?", targetUserID).Find(&follows).Error; err != nil {
+		log.Printf("查询用户粉丝列表失败: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取粉丝列表失败"})
+		return
+	}
+
+	// 构建粉丝列表
+	followerList = make([]string, 0, len(follows))
+	for _, follow := range follows {
+		followerList = append(followerList, follow.Followerid)
+	}
+
+	// 重建缓存
+	if len(followerList) > 0 {
+		members := make([]interface{}, len(followerList))
+		for i, id := range followerList {
+			members[i] = id
+		}
+		global.Redis.SAdd(ctx, key, members...)
+		global.Redis.Expire(ctx, key, 24*time.Hour)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"count":     len(followerList),
+		"followers": followerList,
+	})
 }

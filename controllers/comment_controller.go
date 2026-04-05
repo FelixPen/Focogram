@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -175,23 +175,38 @@ func CreateComment(c *gin.Context) {
 			}
 		}()
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"message":   "评论成功",
-		"content":   input.Content,
-		"commentid": commentid,
-	})
-	postAuthorID, err := models.GetPostAuthor(postid)
-	if err == nil && postAuthorID != userid { // 不是自己评论自己的帖子
+	// 发送评论通知
+	go func() {
+		postAuthorID, err := models.GetPostAuthor(postid)
+		if err != nil || postAuthorID == userid {
+			return
+		}
+
+		var commenter models.User
+		if err := global.Db.Select("username").Where("userid = ?", userid).First(&commenter).Error; err != nil {
+			return
+		}
+
+		shortContent := input.Content
+		if len([]rune(shortContent)) > 20 {
+			shortContent = string([]rune(shortContent)[:20]) + "..."
+		}
+
 		notification := &models.Notification{
 			Userid:      postAuthorID,
 			Senderid:    userid,
 			ContentType: models.NotificationTypeComment,
 			Contentid:   commentid,
-			Content:     userid + "评论了你的帖文: " + input.Content,
+			Content:     commenter.Username + " 评论了你的帖子: " + shortContent,
 		}
-		go utils.PushToWebSocket(notification)
-	}
+		utils.PushToWebSocket(notification)
+	}()
 
+	c.JSON(http.StatusOK, gin.H{
+		"message":   "评论成功",
+		"content":   input.Content,
+		"commentid": commentid,
+	})
 }
 
 func GetPostComments(c *gin.Context) {
@@ -200,130 +215,70 @@ func GetPostComments(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少参数"})
 		return
 	}
-	// 判断帖文是否存在 - 加强验证
 	exists, err := models.CheckPostExists(postid)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "系统错误"})
-		return
-	}
-	if !exists {
-		c.JSON(http.StatusNotFound, gin.H{"error": "帖文不存在"})
-		return
-	}
-
-	//2.解析分页参数（默认第1页，每页20条）
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	size, _ := strconv.Atoi(c.DefaultQuery("size", "20"))
-	if page < 1 {
-		page = 1
-	}
-	if size < 1 || size > 100 {
-		size = 20
-	}
-
-	start := (page - 1) * size
-	end := start + size - 1
-
-	//3.构建缓存键
-	key := cachekeyPostCmts + postid
-
-	//4.先从redis缓存查询
-	//4.1获取评论总数（用于分页）
-	total, err := global.Redis.ZCard(context.Background(), key).Result()
-	if err != nil {
-		log.Printf("获取评论总数失败：%v", err)
-	}
-	//4.2获取当前页的评论id(按时间顺序，最新的在前面)
-	commentids, err := global.Redis.ZRange(context.Background(), key, int64(start), int64(end)).Result()
-	if err == nil && len(commentids) > 0 {
-		//4.3批量获取评论详情
-		comments := make([]map[string]interface{}, 0, len(commentids))
-		for _, commentid := range commentids {
-			cmtData, err := global.Redis.HGetAll(context.Background(), cachekeyComment+commentid).Result()
-			if err != nil {
-				log.Printf("获取评论详情失败：%v", err)
-				continue
-			}
-			if len(cmtData) == 0 {
-				continue
-			}
-			// 构建包含时间的评论数据（从缓存获取createdAt）
-			comments = append(comments, map[string]interface{}{
-				"commentid": cmtData["commentid"],
-				"content":   cmtData["content"],
-				"postid":    cmtData["postid"],
-				"userid":    cmtData["userid"],
-				"createdAt": cmtData["createdAt"], // 添加时间字段
-			})
-		}
-		//4.4返回缓存结果
+	if err != nil || !exists {
 		c.JSON(http.StatusOK, gin.H{
-			"total":   total,
-			"page":    page,
-			"size":    size,
-			"content": comments,
+			"total":    0,
+			"comments": []interface{}{},
 		})
 		return
 	}
-	//5.缓存未命中，从数据库查询
-	var dbComments []models.Comment
-	//5.1先查询总数
+
+	type CommentWithUsername struct {
+		Commentid   string
+		Content     string
+		Userid      string
+		Username    string
+		AvatarUrl   string
+		AvatarColor string
+		CreatedAt   time.Time
+	}
+
+	var comments []CommentWithUsername
 	var count int64
+
+	// 先查总数
 	if err := global.Db.Model(&models.Comment{}).Where("postid = ?", postid).Count(&count).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询评论总数失败"})
 		return
 	}
 
-	//5.2查询您当前页数据
-	if err := global.Db.Where("postid = ?", postid).
-		Order("created_at DESC").
-		Limit(size).Offset(start).
-		Find(&dbComments).Error; err != nil {
+	// 直接从数据库查询，关联用户名，按时间正序（最早的在上面）
+	err = global.Db.Table("comments").
+		Select("comments.commentid, comments.content, comments.userid, comments.created_at, users.username, users.avatar_url, users.avatar_color").
+		Joins("LEFT JOIN users ON comments.userid = users.userid").
+		Where("comments.postid = ? AND comments.deleted_at IS NULL", postid).
+		Order("comments.created_at ASC").
+		Scan(&comments).Error
+
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询评论失败"})
 		return
 	}
 
-	//6.重建缓存
-	pipeline := global.Redis.Pipeline()
-	for _, cmt := range dbComments {
-		//6.1存储评论详情（Hash）
-		cmtKey := cachekeyComment + cmt.Commentid
-		pipeline.HSet(context.Background(), cmtKey, map[string]interface{}{
-			"commentid": cmt.Commentid,
-			"content":   cmt.Content,
-			"postid":    cmt.Postid,
-			"userid":    cmt.Userid,
-			"createdAt": cmt.CreatedAt.Unix(),
-		})
-		pipeline.Expire(context.Background(), cmtKey, 24*time.Hour) // 缓存1天
-		//6.2添加到帖子评论有序集合
-		pipeline.ZAdd(context.Background(), key, &redis.Z{
-			Score:  float64(cmt.CreatedAt.Unix()),
-			Member: cmt.Commentid,
-		})
-	}
-	pipeline.Expire(context.Background(), key, 24*time.Hour) //集合缓存一天
-	if _, err := pipeline.Exec(context.Background()); err != nil {
-		log.Printf("重建缓存失败：%v", err)
-	}
-
-	// 7. 格式化数据库结果并返回
-	result := make([]map[string]interface{}, 0, len(dbComments))
-	for _, cmt := range dbComments {
+	// 格式化结果
+	result := make([]map[string]interface{}, 0, len(comments))
+	for _, cmt := range comments {
+		// 格式化时间显示
+		timeStr := cmt.CreatedAt.Format("2006-01-02 15:04")
+		avatarURL := cmt.AvatarUrl
+		if avatarURL != "" && !strings.HasPrefix(avatarURL, "http") {
+			avatarURL = "http://localhost:8080" + avatarURL
+		}
 		result = append(result, map[string]interface{}{
-			"commentid": cmt.Commentid,
-			"content":   cmt.Content,
-			"userid":    cmt.Userid,
-			"createdAt": cmt.CreatedAt.Unix(),
+			"commentid":   cmt.Commentid,
+			"content":     cmt.Content,
+			"userid":      cmt.Userid,
+			"username":    cmt.Username,
+			"avatarUrl":   avatarURL,
+			"avatarColor": cmt.AvatarColor,
+			"createdAt":   timeStr,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"total":   count,
-		"page":    page,
-		"size":    size,
-		"content": result,
+		"total":    count,
+		"comments": result,
 	})
-
 }
 
 func DeleteComment(c *gin.Context) {
@@ -336,7 +291,7 @@ func DeleteComment(c *gin.Context) {
 
 	//1.查询评论信息，验证验证存在性并获取相关ID
 	var comment models.Comment
-	if err := global.Db.Where("commentid=?", commentid).First(&comment).Error; err != nil {
+	if err := global.Db.Unscoped().Where("commentid=?", commentid).First(&comment).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			c.JSON(http.StatusNotFound, gin.H{"error": "评论不存在"})
 			return
@@ -351,7 +306,7 @@ func DeleteComment(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "系统错误"})
 		return
 	}
-	if !isPostAuthor {
+	if comment.Userid != userid && !isPostAuthor {
 		c.JSON(http.StatusForbidden, gin.H{"error": "无权限删除此评论"})
 		return
 	}
@@ -362,7 +317,7 @@ func DeleteComment(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": tx.Error.Error()})
 		return
 	}
-	if err := tx.Delete(&comment).Error; err != nil {
+	if err := tx.Unscoped().Delete(&comment).Error; err != nil {
 		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

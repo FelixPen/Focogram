@@ -30,6 +30,17 @@ func GenerateRandomUserIDSecure() string {
 	return string(result)
 }
 
+func GenerateRandomCode(length int) string {
+	const digits = "0123456789"
+
+	rand.Seed(time.Now().UnixNano())
+	result := make([]byte, length)
+	for i := range result {
+		result[i] = digits[rand.Intn(len(digits))]
+	}
+	return string(result)
+}
+
 func HashPassword(pwd string) (string, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(pwd), 12)
 	return string(hash), err

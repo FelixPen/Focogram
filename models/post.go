@@ -12,16 +12,18 @@ import (
 
 type Post struct {
 	gorm.Model
-	Postid  string `gorm:"primarykey;size:36;not null;unique" json:"postid"`
-	Userid  string `gorm:"size:36;not null;index" json:"userid"` // 外键，需与 users.userid 类型一致
-	Content string `gorm:"type:text;size:500;not null"`
+	Postid   string `gorm:"primarykey;size:36;not null;unique" json:"postid"`
+	Userid   string `gorm:"size:36;not null;index" json:"userid"` // 关联 users.userid
+	Content  string `gorm:"type:text;size:500;not null"`
+	ImageUrl string `gorm:"size:500;default:''" json:"image_url"`
 
-	//关联：一个帖子属于一个用户（多对一）
-	User User `gorm:"foreignKey:Userid;references:Userid"`
+	//关联：一个帖子属于一个用户（多对一），禁用自动外键，手动维护
+	User User `gorm:"-"`
 }
 
 type PostRequest struct {
-	Content string `gorm:"type:text;size:500;not null"`
+	Content  string `json:"content"`
+	ImageUrl string `json:"image_url"`
 }
 
 // 假设原函数如下（请根据实际路径调整）：

@@ -117,7 +117,7 @@ func (bp *BatchProcessor) saveBatch(batch []*models.Like) {
 
 	tx := global.Db.Begin()
 	if tx.Error != nil {
-		global.Db.Logger.Error(context.TODO(), "批量写入开启事务失败：%v", tx.Error)
+		global.Db.Logger.Error(context.TODO(), "批量写入开启事务失败："+tx.Error.Error())
 		bp.returnToPool(batch)
 		return
 	}
@@ -129,13 +129,13 @@ func (bp *BatchProcessor) saveBatch(batch []*models.Like) {
 
 	if err != nil {
 		tx.Rollback()
-		global.Db.Logger.Error(context.TODO(), "批量写入数据库失败：%v", err)
+		global.Db.Logger.Error(context.TODO(), "批量写入数据库失败："+err.Error())
 		bp.returnToPool(batch)
 		return
 	}
 
 	if err := tx.Commit().Error; err != nil {
-		global.Db.Logger.Error(context.TODO(), "批量提交事务失败：%v", err)
+		global.Db.Logger.Error(context.TODO(), "批量提交事务失败："+err.Error())
 		bp.returnToPool(batch)
 		return
 	}
@@ -173,13 +173,15 @@ func LikePost2(c *gin.Context) {
 		return
 	}
 
-	// 检查帖子是否存在
-	if exists, err := models.CheckPostExists(postid); err != nil || !exists {
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "系统错误"})
-		} else {
-			c.JSON(http.StatusNotFound, gin.H{"error": "帖文不存在"})
-		}
+	// 检查帖子是否存在，不存在直接返回成功
+	exists, _ := models.CheckPostExists(postid)
+	if !exists {
+		c.JSON(http.StatusOK, gin.H{
+			"message":   "帖子不存在",
+			"likeCount": 0,
+			"isLiked":   false,
+			"postid":    postid,
+		})
 		return
 	}
 
@@ -189,7 +191,7 @@ func LikePost2(c *gin.Context) {
 	// 检查是否已点赞
 	isLiked, err := global.Redis.SIsMember(context.Background(), cacheKey, userid).Result()
 	if err != nil {
-		global.Db.Logger.Error(context.TODO(), "Redis检查点赞状态失败: %v", err)
+		global.Db.Logger.Error(context.TODO(), "Redis检查点赞状态失败: "+err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取点赞状态失败，请稍后再试"})
 		return
 	}
@@ -210,7 +212,7 @@ func LikePost2(c *gin.Context) {
 		like.Liked = false
 
 		if err != nil {
-			global.Db.Logger.Error(context.TODO(), "Redis取消点赞失败: %v", err)
+			global.Db.Logger.Error(context.TODO(), "Redis取消点赞失败: "+err.Error())
 			c.JSON(http.StatusInternalServerError, gin.H{"error": action + "失败，请稍后再试"})
 			return
 		}
@@ -227,7 +229,7 @@ func LikePost2(c *gin.Context) {
 		like.Liked = true
 
 		if err != nil {
-			global.Db.Logger.Error(context.TODO(), "Redis点赞失败: %v", err)
+			global.Db.Logger.Error(context.TODO(), "Redis点赞失败: "+err.Error())
 			c.JSON(http.StatusInternalServerError, gin.H{"error": action + "失败，请稍后再试"})
 			return
 		}
@@ -240,7 +242,7 @@ func LikePost2(c *gin.Context) {
 		default:
 			// 队列满，直接同步保存
 			if err := global.Db.Save(like).Error; err != nil {
-				global.Db.Logger.Error(context.TODO(), "数据库写入失败：%v", err)
+				global.Db.Logger.Error(context.TODO(), "数据库写入失败："+err.Error())
 			}
 		}
 	}
@@ -251,7 +253,7 @@ func LikePost2(c *gin.Context) {
 	// 获取点赞数
 	likeCount, err := global.Redis.SCard(context.Background(), cacheKey).Result()
 	if err != nil {
-		global.Db.Logger.Error(context.TODO(), "获取点赞数失败: %v", err)
+		global.Db.Logger.Error(context.TODO(), "获取点赞数失败: "+err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取点赞数失败"})
 		return
 	}
@@ -297,16 +299,23 @@ func updateDatabaseSync(like *models.Like) error {
 func sendNotification(userid, postid string) {
 	go func() {
 		postAuthorID, err := models.GetPostAuthor(postid)
-		if err == nil && postAuthorID != userid {
-			notification := &models.Notification{
-				Userid:      postAuthorID,
-				Senderid:    userid,
-				ContentType: models.NotificationTypeLike,
-				Contentid:   postid,
-				Content:     userid + "点赞了你的帖文",
-			}
-			utils.PushToWebSocket(notification)
+		if err != nil || postAuthorID == userid {
+			return
 		}
+
+		var liker models.User
+		if err := global.Db.Select("username").Where("userid = ?", userid).First(&liker).Error; err != nil {
+			return
+		}
+
+		notification := &models.Notification{
+			Userid:      postAuthorID,
+			Senderid:    userid,
+			ContentType: models.NotificationTypeLike,
+			Contentid:   postid,
+			Content:     liker.Username + " 点赞了你的帖子",
+		}
+		utils.PushToWebSocket(notification)
 	}()
 }
 

@@ -30,8 +30,12 @@ func initDB() {
 	}
 	global.Db = db
 
+	// 禁用外键检查，删除所有错误的外键（MySQL 不支持 IF EXISTS，忽略报错）
+	_ = global.Db.Exec("SET FOREIGN_KEY_CHECKS=0").Error
+	_ = global.Db.Exec("ALTER TABLE users DROP FOREIGN KEY fk_posts_user").Error
+	_ = global.Db.Exec("ALTER TABLE users DROP INDEX fk_posts_user").Error
+
 	if err := global.Db.AutoMigrate(&models.User{}); err != nil {
-		// 尝试恢复外键检查后再退出
 		_ = global.Db.Exec("SET FOREIGN_KEY_CHECKS=1").Error
 		log.Fatal("数据库迁移失败:", err)
 	}
@@ -67,5 +71,8 @@ func initDB() {
 	if err := follow.Migration(global.Db); err != nil {
 		log.Fatal("关注表迁移失败:", err)
 	}
+
+	// 所有迁移完成后，恢复外键检查
+	_ = global.Db.Exec("SET FOREIGN_KEY_CHECKS=1").Error
 
 }

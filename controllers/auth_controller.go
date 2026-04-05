@@ -5,6 +5,7 @@ import (
 	"Focogram/models"
 	"Focogram/utils"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -25,14 +26,28 @@ func Register(c *gin.Context) {
 		return
 	}
 
+	// 设置默认值
+	email := req.Email
+	if email == "" {
+		email = ""
+	}
+	gender := req.Gender
+	if gender == "" {
+		gender = "未知"
+	}
+	age := req.Age
+	if age == 0 {
+		age = 0
+	}
+
 	// 创建用户对象
 	user := models.User{
 		Userid:   userID,
 		Username: req.Username,
-		Email:    req.Email,
+		Email:    email,
 		Password: hashPwd,
-		Gender:   req.Gender,
-		Age:      req.Age,
+		Gender:   gender,
+		Age:      age,
 		Describe: "",
 		Address:  "",
 	}
@@ -81,14 +96,76 @@ func Login(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	avatarURL := user.AvatarUrl
+	if avatarURL != "" && !strings.HasPrefix(avatarURL, "http") {
+		avatarURL = "http://localhost:8080" + avatarURL
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"message": "登录成功",
 		"token":   token,
+		"user": gin.H{
+			"userid":      user.Userid,
+			"username":    user.Username,
+			"avatarColor": user.AvatarColor,
+			"avatarUrl":   avatarURL,
+			"bannerColor": user.BannerColor,
+		},
 	})
 }
 
 func GetUserInfo(c *gin.Context) {
+	userid := c.Query("userid")
 	keyword := c.Query("keyword")
+
+	// 如果传了 userid，就是查询单个用户信息
+	if userid != "" {
+		var user models.User
+		if err := global.Db.Where("userid = ?", userid).First(&user).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "用户不存在"})
+			return
+		}
+		// 返回单个用户完整信息
+		avatarURL := user.AvatarUrl
+		if avatarURL != "" && !strings.HasPrefix(avatarURL, "http") {
+			avatarURL = "http://localhost:8080" + avatarURL
+		}
+
+		var followingCount int64
+		var followersCount int64
+		global.Db.Model(&models.Follow{}).Where("followerid = ?", userid).Count(&followingCount)
+		global.Db.Model(&models.Follow{}).Where("followedid = ?", userid).Count(&followersCount)
+
+		currentUserID := c.GetString("userid")
+		isOwnProfile := currentUserID == userid
+
+		userData := gin.H{
+			"userid":         user.Userid,
+			"username":       user.Username,
+			"gender":         user.Gender,
+			"age":            user.Age,
+			"birthDate":      user.BirthDate,
+			"describe":       user.Describe,
+			"address":        user.Address,
+			"avatarColor":    user.AvatarColor,
+			"avatarUrl":      avatarURL,
+			"bannerColor":    user.BannerColor,
+			"createdAt":      user.CreatedAt,
+			"followingCount": followingCount,
+			"followersCount": followersCount,
+		}
+
+		if isOwnProfile {
+			userData["email"] = user.Email
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"user": userData,
+		})
+		return
+	}
+
+	// 否则是搜索用户
 	if keyword == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "搜索不能为空"})
 		return
@@ -96,8 +173,8 @@ func GetUserInfo(c *gin.Context) {
 
 	var users []models.User
 
-	//同时搜索用户名和账号
-	if err := global.Db.Where("userid = ? OR username = ?", keyword, keyword).Find(&users).Error; err != nil {
+	//同时搜索用户名和账号（模糊搜索）
+	if err := global.Db.Where("userid LIKE ? OR username LIKE ?", "%"+keyword+"%", "%"+keyword+"%").Limit(20).Find(&users).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -110,15 +187,17 @@ func GetUserInfo(c *gin.Context) {
 	var userList []gin.H
 
 	for _, user := range users {
+		avatarURL := user.AvatarUrl
+		if avatarURL != "" && !strings.HasPrefix(avatarURL, "http") {
+			avatarURL = "http://localhost:8080" + avatarURL
+		}
 		userList = append(userList, gin.H{
-			"user_id":  user.Userid,
-			"username": user.Username,
-			"email":    user.Email,
-			"gender":   user.Gender,
-			"age":      user.Age,
-			"describe": user.Describe,
-			"address":  user.Address,
-			"post_num": user.PostNum,
+			"userid":    user.Userid,
+			"username":  user.Username,
+			"avatarUrl": avatarURL,
+			"gender":    user.Gender,
+			"describe":  user.Describe,
+			"postNum":   user.PostNum,
 		})
 	}
 
@@ -132,18 +211,20 @@ func GetUserInfo(c *gin.Context) {
 
 func UpdateUserInfo(c *gin.Context) {
 	var input struct {
-		Username string `json:"username" validate:"omitempty,min=1,max=15"`
-		Gender   string `json:"gender" validate:"omitempty,oneof=男 女 未知"`
-		Age      int    `json:"age" validate:"omitempty,min=0,max=150"`
-		Describe string `json:"describe" validate:"omitempty,max=100"`
-		Address  string `json:"address" validate:"omitempty,max=50"`
+		Username    string `json:"username" validate:"omitempty,min=1,max=15"`
+		Gender      string `json:"gender" validate:"omitempty,oneof=男 女 未知"`
+		Age         int    `json:"age" validate:"omitempty,min=0,max=150"`
+		BirthDate   string `json:"birthDate" validate:"omitempty,max=20"`
+		Describe    string `json:"describe" validate:"omitempty,max=100"`
+		Address     string `json:"address" validate:"omitempty,max=50"`
+		AvatarColor string `json:"avatarColor" validate:"omitempty,max=200"`
+		AvatarUrl   string `json:"avatarUrl" validate:"omitempty,max=500"`
+		BannerColor string `json:"bannerColor" validate:"omitempty,max=200"`
 	}
-	//绑定并验证输入
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	//获取当前用户ID
 	userid := c.GetString("userid")
 	if userid == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "未授权"})
@@ -169,6 +250,16 @@ func UpdateUserInfo(c *gin.Context) {
 	}
 	if input.Address != "" {
 		updateData["address"] = input.Address
+	}
+	if input.AvatarColor != "" {
+		updateData["avatar_color"] = input.AvatarColor
+	}
+	updateData["avatar_url"] = input.AvatarUrl
+	if input.BannerColor != "" {
+		updateData["banner_color"] = input.BannerColor
+	}
+	if input.BirthDate != "" {
+		updateData["birth_date"] = input.BirthDate
 	}
 	if err := global.Db.Model(&user).Updates(updateData).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -226,4 +317,36 @@ func UpdatePassword(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message": "密码更新成功，请使用新密码登录",
 	})
+}
+
+// 通过邮箱重置密码（只需验证邮箱已注册）
+func ResetPasswordByEmail(c *gin.Context) {
+	var req struct {
+		Email       string `json:"email" validate:"required,email"`
+		NewPassword string `json:"new_password" validate:"required,min=6"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求参数错误"})
+		return
+	}
+
+	// 验证邮箱是否已注册
+	var user models.User
+	if err := global.Db.Where("email = ?", req.Email).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "该邮箱未注册"})
+		return
+	}
+
+	// 加密新密码
+	hashPwd, err := utils.HashPassword(req.NewPassword)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "密码加密失败"})
+		return
+	}
+
+	// 更新密码
+	global.Db.Model(&user).Update("password", hashPwd)
+
+	c.JSON(http.StatusOK, gin.H{"message": "密码重置成功"})
 }

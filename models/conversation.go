@@ -26,6 +26,7 @@ type PrivateMessage struct {
 	SenderID       string         `gorm:"size:36;not null" json:"sender_id"`
 	ReceiverID     string         `gorm:"size:36;not null" json:"receiver_id"`
 	Content        string         `gorm:"type:text;not null" json:"content"`
+	IsRead         bool           `gorm:"default:false" json:"is_read"`
 	CreatedAt      time.Time      `json:"created_at"`
 	UpdatedAt      time.Time      `json:"updated_at"`
 	DeletedAt      gorm.DeletedAt `gorm:"index" json:"-"`

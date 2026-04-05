@@ -18,4 +18,5 @@ type Notification struct {
 	ContentType string `gorm:"type:varchar(20);not null" json:"content_type"`    // 通知类型
 	Contentid   string `gorm:"type:varchar(36);not null;index" json:"contentid"` // 关联内容ID
 	Content     string `gorm:"type:text;size:500;not null" json:"content"`       // 通知内容
+	IsRead      bool   `gorm:"default:false;index" json:"is_read"`               // 是否已读
 }

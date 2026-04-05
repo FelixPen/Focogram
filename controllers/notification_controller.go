@@ -104,14 +104,113 @@ func returnNotifications(c *gin.Context, notifications []models.Notification, to
 			"content_type": n.ContentType,
 			"contentid":    n.Contentid,
 			"content":      n.Content,
-			"created_at":   n.CreatedAt.Format("2006-01-02 15:04:05"),
+			"time":         n.CreatedAt.Format("2006-01-02 15:04:05"),
+			"is_read":      n.IsRead,
 		})
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"total": total,
-		"page":  page,
-		"size":  size,
-		"items": result,
+		"total":         total,
+		"page":          page,
+		"size":          size,
+		"notifications": result,
+	})
+}
+
+// 标记全部通知为已读
+func MarkNotificationsAsRead(c *gin.Context) {
+	userid := c.GetString("userid")
+	if userid == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "请先登录"})
+		return
+	}
+
+	// 批量更新未读通知
+	if err := global.Db.Model(&models.Notification{}).
+		Where("userid = ? AND is_read = ?", userid, false).
+		Update("is_read", true).Error; err != nil {
+		log.Printf("标记通知已读失败: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "标记已读失败"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "标记已读成功"})
+}
+
+func DeleteNotification(c *gin.Context) {
+	userid := c.GetString("userid")
+	notificationID := c.Param("id")
+
+	if userid == "" || notificationID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
+		return
+	}
+
+	id, err := strconv.ParseUint(notificationID, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID格式错误"})
+		return
+	}
+
+	result := global.Db.Unscoped().
+		Where("id = ? AND userid = ?", id, userid).
+		Delete(&models.Notification{})
+
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除失败"})
+		return
+	}
+
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "通知不存在"})
+		return
+	}
+
+	ctx := context.Background()
+	global.Redis.ZRem(ctx, utils.UserNotificationSetPrefix+userid, id)
+
+	c.JSON(http.StatusOK, gin.H{"message": "删除成功"})
+}
+
+func BatchDeleteNotifications(c *gin.Context) {
+	userid := c.GetString("userid")
+	if userid == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "请先登录"})
+		return
+	}
+
+	var req struct {
+		Ids []uint64 `json:"ids" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
+		return
+	}
+
+	if len(req.Ids) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请选择要删除的通知"})
+		return
+	}
+
+	result := global.Db.Unscoped().
+		Where("id IN (?) AND userid = ?", req.Ids, userid).
+		Delete(&models.Notification{})
+
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除失败"})
+		return
+	}
+
+	ctx := context.Background()
+	ids := make([]interface{}, len(req.Ids))
+	for i, id := range req.Ids {
+		ids[i] = id
+	}
+	global.Redis.ZRem(ctx, utils.UserNotificationSetPrefix+userid, ids...)
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "删除成功",
+		"deleted": result.RowsAffected,
 	})
 }
