@@ -78,7 +78,24 @@ const router = createRouter({
   routes
 })
 
+const pageTitles = {
+  'Home': '首页 - Focogram',
+  'Search': '搜索 - Focogram',
+  'Settings': '设置 - Focogram',
+  'Profile': '个人主页 - Focogram',
+  'PostDetail': '帖子详情 - Focogram',
+  'Notifications': '通知 - Focogram',
+  'Messages': '消息 - Focogram',
+  'Chat': '聊天 - Focogram',
+  'UserList': '用户列表 - Focogram',
+  'Login': '登录 - Focogram',
+  'Register': '注册 - Focogram',
+  'ForgotPassword': '忘记密码 - Focogram'
+}
+
 router.beforeEach((to, from, next) => {
+  document.title = pageTitles[to.name] || 'Focogram'
+  
   const userStore = useUserStore()
   
   if (to.meta.requiresAuth && !userStore.isLoggedIn) {

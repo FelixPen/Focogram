@@ -66,11 +66,11 @@ services:
     networks:
       - focogram-network
 
-  frontend:
+  focogram:
     build:
       context: ./web
       dockerfile: Dockerfile.frontend
-    container_name: focogram-frontend
+    container_name: focogram-web
     restart: always
     depends_on:
       - backend
