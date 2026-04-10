@@ -19,8 +19,9 @@ const messagesEndRef = ref(null)
 
 let wsListener = null
 
-const scrollToBottom = () => {
-  messagesEndRef.value?.scrollIntoView({ behavior: 'auto' })
+const scrollToBottom = async () => {
+  await nextTick()
+  messagesEndRef.value?.scrollIntoView({ behavior: 'smooth' })
 }
 
 const fetchMessages = async () => {
